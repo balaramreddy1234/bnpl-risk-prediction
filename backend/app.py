@@ -5,10 +5,11 @@ import pytz
 import sqlite3
 import pdfplumber
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, session, send_from_directory
+from flask import Flask, request, jsonify, session, send_from_directory, redirect, url_for
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from functools import wraps
 
 # --- 1. LOCAL MODULE IMPORTS ---
 from database.db_connection import get_db
@@ -137,6 +138,22 @@ def generate_smart_suggestion(row):
 
 # --- 6. AUTHENTICATION & SESSION MANAGEMENT ---
 
+def login_required(f):
+    """Decorator to protect routes that require login"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify(error="Unauthorized", status=401), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route("/auth/check")
+def check_auth():
+    """Check if user is logged in and return username"""
+    if "user_id" in session:
+        return jsonify(logged_in=True, username=session.get("user_name", "User"))
+    return jsonify(logged_in=False)
+
 @app.route("/register", methods=["POST"])
 def register():
     data, db = request.json, get_db()
@@ -170,16 +187,16 @@ def logout():
 # --- 7. USER PROFILE & ACCOUNT SETTINGS ---
 
 @app.route("/user/profile")
+@login_required
 def get_profile():
-    if "user_id" not in session: return jsonify(error="Unauthorized"), 401
     db = get_db()
     u = db.execute("SELECT name, email, age, address, profile_photo, mobile FROM users WHERE id=?", 
                    (session["user_id"],)).fetchone()
     return jsonify(name=u[0], email=u[1], age=u[2] or "", address=u[3] or "", photo=u[4] or None, mobile=u[5] or "")
 
 @app.route("/user/update", methods=["POST"])
+@login_required
 def update_profile():
-    if "user_id" not in session: return jsonify(success=False, error="Unauthorized"), 401
     name = request.form.get('name')
     age = request.form.get('age')
     address = request.form.get('address')
@@ -200,8 +217,8 @@ def update_profile():
     except Exception as e: return jsonify(success=False, error=str(e)), 500
 
 @app.route("/user/change-password", methods=["POST"])
+@login_required
 def change_password():
-    if "user_id" not in session: return jsonify(success=False, error="Unauthorized"), 401
     data, db = request.json, get_db()
     new_hashed = generate_password_hash(data.get("password"))
     try:
@@ -213,8 +230,8 @@ def change_password():
 # --- 8. ML PREDICTIONS & BATCH DATA ANALYTICS ---
 
 @app.route("/predict", methods=["POST"])
+@login_required
 def predict():
-    if "user_id" not in session: return jsonify(error="Unauthorized"), 401
     data = request.json
     try:
         data['name'] = session.get("user_name", "User")
@@ -254,8 +271,8 @@ def predict():
     except Exception as e: return jsonify(success=False, error=str(e)), 500
 
 @app.route("/upload", methods=["POST"])
+@login_required
 def upload():
-    if "user_id" not in session: return jsonify(error="Unauthorized"), 401
     file = request.files.get("file")
     if not file: return jsonify(error="No file uploaded"), 400
     
@@ -303,8 +320,8 @@ def upload():
     except Exception as e: return jsonify(success=False, error=str(e)), 500
 
 @app.route("/generate-member-pdf", methods=["POST"])
+@login_required
 def generate_member_pdf():
-    if "user_id" not in session: return jsonify(error="Unauthorized"), 401
     data = request.json
     try:
         vals = {k: float("".join(filter(lambda x: x.isdigit() or x == '.', str(data.get(k, 0))))) for k in ["income", "loan", "emi", "tenure", "ontime", "delays", "credit"]}
@@ -324,24 +341,24 @@ def generate_member_pdf():
 # --- 9. HELP, SUPPORT & PREDICTION HISTORY ---
 
 @app.route("/user/prediction-history")
+@login_required
 def history():
-    if "user_id" not in session: return jsonify(error="Unauthorized"), 401
     db = get_db()
     rows = db.execute("SELECT id, created_at, source, income, filename, risk, high_risk_count, low_risk_count, total_count, probability, report_path FROM predictions WHERE user_id=? ORDER BY created_at DESC", (session["user_id"],)).fetchall()
     res = [{"id": r[0], "type": r[2], "created_at": format_time(r[1]), "income": r[3] or 0, "filename": r[4] or "N/A", "risk": r[5] or "N/A", "high": r[6] or 0, "low": r[7] or 0, "total": r[8] or 0, "probability": float(r[9]) if r[9] else 0.0, "report": r[10]} for r in rows]
     return jsonify(res)
 
 @app.route("/user/feedback", methods=["POST"])
+@login_required
 def submit_feedback():
-    if "user_id" not in session: return jsonify(success=False, error="Unauthorized"), 401
     data, db = request.json, get_db()
     db.execute("INSERT INTO feedback (user_id, name, email, category, details) VALUES (?, ?, ?, ?, ?)", (session["user_id"], data.get('name'), data.get('email'), data.get('category'), data.get('details')))
     db.commit()
     return jsonify(success=True)
 
 @app.route("/user/delete-history", methods=["POST"])
+@login_required
 def delete_history():
-    if "user_id" not in session: return jsonify(success=False, error="Unauthorized"), 401
     ids, db = request.json.get("ids", []), get_db()
     placeholders = ','.join(['?'] * len(ids))
     db.execute(f"DELETE FROM predictions WHERE user_id = ? AND id IN ({placeholders})", [session["user_id"]] + ids)
@@ -356,15 +373,27 @@ def download(filename):
 
 @app.route("/")
 def index():
+    if "user_id" in session:
+        return send_from_directory(FRONTEND_DIR, "pages/dashboard.html")
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 @app.route("/<path:path>")
 def static_proxy(path):
+    # Protect specific page routes
+    protected_pages = ["pages/dashboard.html", "pages/upload.html", "pages/predict.html", 
+                       "pages/emi_history.html", "pages/admin.html", "pages/transparency.html"]
+    
+    if any(path.startswith(p) for p in protected_pages):
+        if "user_id" not in session:
+            return send_from_directory(FRONTEND_DIR, "pages/login.html"), 401
+    
     full_path = os.path.join(FRONTEND_DIR, path)
     if os.path.exists(full_path):
         return send_from_directory(FRONTEND_DIR, path)
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
-    # Important: Run on 0.0.0.0 to ensure local connections are accepted
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Production-ready configuration for Render deployment
+    port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("FLASK_DEBUG", "False") == "True"
+    app.run(debug=debug_mode, host="0.0.0.0", port=port)

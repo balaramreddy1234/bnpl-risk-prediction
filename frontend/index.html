@@ -116,5 +116,17 @@
   </div>
 </div>
 
+<script>
+  // Redirect to dashboard if already logged in
+  fetch('/auth/check')
+    .then(res => res.json())
+    .then(data => {
+      if (data.logged_in) {
+        window.location.href = '/pages/dashboard.html';
+      }
+    })
+    .catch(err => console.error('Auth check failed:', err));
+</script>
+
 </body>
 </html>

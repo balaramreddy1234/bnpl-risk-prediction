@@ -6,7 +6,27 @@
     <title>Risk Transparency - BNPL Engine</title>
     <link rel="stylesheet" href="/css/base.css">
     <style>
-        body { background-color: #f4f7f6; font-family: 'Segoe UI', sans-serif; margin: 0; }
+        body { background-color: #f8fafc; font-family: 'Segoe UI', sans-serif; margin: 0; }
+
+        nav {
+          display: grid;
+          grid-template-columns: 1fr auto 1fr;
+          align-items: center;
+          padding: 12px 60px;
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .nav-left { grid-column: 1; }
+        .nav-center-title { grid-column: 2; margin: 0; color: #2c3e50; font-size: 22px; white-space: nowrap; }
+        .nav-right { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: 20px; }
+
+        .profile-dropdown { position: relative; display: inline-block; }
+        .dropdown-content { display: none; position: absolute; right: 0; top: 45px; background: white; min-width: 220px; border-radius: 8px; box-shadow: 0 8px 16px rgba(0,0,0,0.15); z-index: 1000; padding: 10px 0; }
+        .dropdown-content a { color: #333; padding: 12px 16px; text-decoration: none; display: block; font-size: 14px; cursor: pointer; border-bottom: 1px solid #f8fafc; }
+        .dropdown-content a:hover { background: #f8fafc; }
+        .profile-icon { width: 40px; height: 40px; background: #007bff; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; font-size: 20px; }
+
         .container { max-width: 900px; margin: 50px auto; padding: 30px; background: white; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
         h1 { color: #2c3e50; border-bottom: 3px solid #007bff; padding-bottom: 10px; }
         .logic-card { background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px; border-left: 5px solid #007bff; }
@@ -17,6 +37,26 @@
     </style>
 </head>
 <body>
+
+<nav>
+  <div class="nav-left"><a href="/pages/dashboard.html" style="color: #007bff; text-decoration: none; font-weight: 600;">← Dashboard</a></div>
+  <h2 class="nav-center-title">🔍 Transparency</h2>
+  
+  <div class="nav-right">
+    <span style="color: #64748b;">Welcome, <strong id="welcomeName" style="color: #1e293b;">User</strong>!</span>
+    
+    <div class="profile-dropdown">
+      <div class="profile-icon" id="headerProfileIcon" onclick="toggleProfileMenu()">👤</div>
+      <div class="dropdown-content" id="profileMenu">
+        <div style="padding: 10px 16px; border-bottom: 1px solid #f1f5f9;">
+          <div id="dropdownFullName" style="font-weight: bold; font-size: 14px;">Loading...</div>
+          <div id="dropdownEmail" style="font-size: 12px; color: #94a3b8;">Loading...</div>
+        </div>
+        <a onclick="logout()" style="color: #ef4444; font-weight: bold;">🚪 Logout</a>
+      </div>
+    </div>
+  </div>
+</nav>
 
 <div class="container">
     <h1>🔍 Decision Transparency</h1>
@@ -55,6 +95,43 @@
 
     <a href="/pages/dashboard.html" class="back-btn">⬅️ Back to Dashboard</a>
 </div>
+
+<script>
+  window.shouldProtectPage = true;
+  function toggleProfileMenu() {
+    const menu = document.getElementById("profileMenu");
+    if (menu) {
+      menu.style.display = (menu.style.display === "block") ? "none" : "block";
+    }
+  }
+  
+  document.addEventListener("DOMContentLoaded", () => {
+    fetch("/user/profile")
+      .then(res => {
+        if (res.status === 401) {
+          window.location.href = "/pages/login.html";
+          return;
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data && data.name) {
+          document.getElementById("welcomeName").innerText = data.name;
+          document.getElementById("dropdownFullName").innerText = data.name;
+          document.getElementById("dropdownEmail").innerText = data.email;
+          
+          const photoUrl = data.photo ? `/assets/profile_pics/${data.photo}` : null;
+          const headerIcon = document.getElementById("headerProfileIcon");
+          if (photoUrl) {
+            headerIcon.innerHTML = `<img src="${photoUrl}" alt="Profile" style="width:100%; height:100%; object-fit:cover;">`;
+          }
+        }
+      })
+      .catch(err => console.error("Could not load user profile:", err));
+  });
+</script>
+
+<script src="/js/auth.js"></script>
 
 </body>
 </html>

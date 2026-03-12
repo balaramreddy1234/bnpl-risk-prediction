@@ -1,3 +1,37 @@
+function logout() {
+  fetch("/logout")
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        window.location.href = "/";
+      }
+    })
+    .catch(err => console.error("Logout failed:", err));
+}
+
+// Check if user is logged in and redirect to login if not
+function protectPage() {
+  fetch("/auth/check")
+    .then(res => res.json())
+    .then(data => {
+      if (!data.logged_in) {
+        window.location.href = "/pages/login.html";
+      }
+    })
+    .catch(err => {
+      console.error("Auth check failed:", err);
+      window.location.href = "/pages/login.html";
+    });
+}
+
+// Call this on page load for protected pages
+document.addEventListener("DOMContentLoaded", () => {
+  // Only run on protected pages that have the protectPage call
+  if (window.shouldProtectPage) {
+    protectPage();
+  }
+});
+
 function login() {
   const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;

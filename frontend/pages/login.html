@@ -4,10 +4,23 @@
   <title>Login</title>
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/forms.css">
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      margin: 0;
+      padding: 20px;
+    }
+  </style>
 </head>
 <body>
 
-<div style="max-width: 400px; margin: 50px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+<div style="max-width: 400px; margin: 50px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; background: white;">
   <h2 style="text-align: center;">User Login</h2>
 
   <form style="display: flex; flex-direction: column;">
@@ -24,9 +37,21 @@
   </p>
   
   <p style="text-align: center; margin-top: 20px;">
-    <a href="/" style="color: #6c757d;">← Back to Home</a>
+    <a href="/" style="color: #6c757d;">← Back Home</a>
   </p>
 </div>
+
+<script>
+  // Redirect to dashboard if already logged in
+  fetch('/auth/check')
+    .then(res => res.json())
+    .then(data => {
+      if (data.logged_in) {
+        window.location.href = '/pages/dashboard.html';
+      }
+    })
+    .catch(err => console.error('Auth check failed:', err));
+</script>
 
 <script src="/js/auth.js"></script>
 </body>
