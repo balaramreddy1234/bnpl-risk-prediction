@@ -2,7 +2,7 @@
 
 An AI-powered web application for predicting EMI (Equated Monthly Installment) default risk using machine learning. Built with Flask, React-style vanilla JS, and a Random Forest model.
 
-**Live Demo:** https://bnpl-emi-risk.onrender.com (When deployed)
+**Live Demo:** https://bnpl-risk.onrender.com
 
 ---
 
