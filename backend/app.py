@@ -1,4 +1,12 @@
 import os
+import sys
+
+# --- 0. PATH FIX FOR PRODUCTION ---
+# This ensures that 'database', 'utils', and 'ml' are found when running on Render
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
 import joblib
 import pandas as pd
 import pytz
@@ -19,9 +27,10 @@ from utils.pdf_generator import create_visual_report
 from config import UPLOAD_FOLDER, REPORT_FOLDER
 
 app = Flask(__name__)
-app.secret_key = "bnpl_ultra_secure_key_telangana_2026"
+# Keep the secret key consistent for session persistence
+app.secret_key = os.environ.get("SESSION_KEY", "bnpl_ultra_secure_key_telangana_2026")
 
-# --- 2. GLOBAL CONFIGURATION (FIXED FOR CONNECTION ERRORS) ---
+# --- 2. GLOBAL CONFIGURATION ---
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -29,16 +38,14 @@ app.config.update(
     MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB Upload Limit
 )
 
-# Robust CORS to prevent Connection Refused/Preflight errors
 CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
 
-# Timezone set to IST for Telangana (Hyderabad)
 IST = pytz.timezone("Asia/Kolkata")
 
 # --- 3. DATABASE AUTO-MIGRATOR ---
 def apply_migrations():
-    """Ensures SQLite schema is always up to date without losing data"""
     db = get_db()
+    # Migration logic for SQLite compatibility
     schema_map = {
         "predictions": [
             ("filename", "TEXT"), ("high_risk_count", "INTEGER"), 
@@ -71,20 +78,19 @@ def apply_migrations():
     db.commit()
     db.close()
 
-# System Initialization
-init_database()
-apply_migrations()
+# Initialize DB on start
+try:
+    init_database()
+    apply_migrations()
+except Exception as e:
+    print(f"⚠️ Migration/Init Warning: {e}")
 
 # --- 4. PATHS & ML MODEL LOADING ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
-# Fix: Ensure profile_pics is inside assets for frontend access
 PROFILE_PIC_DIR = os.path.join(FRONTEND_DIR, "assets", "profile_pics")
 
 os.makedirs(PROFILE_PIC_DIR, exist_ok=True)
 os.makedirs(REPORT_FOLDER, exist_ok=True)
-
-
 
 try:
     MODEL_DIR = os.path.join(BASE_DIR, "models")
@@ -98,22 +104,13 @@ except Exception as e:
 
 def format_time(ts):
     try:
-        # Convert string to datetime
         dt = datetime.fromisoformat(ts.replace(" ", "T"))
-
-        # If no timezone info, assume UTC
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=pytz.UTC)
-
-        # Convert to IST
         ist_dt = dt.astimezone(IST)
-
-        # Format as IST date & time
-        return ist_dt.strftime("%d-%m-%Y %I:%M %p")  # 12-hour format
-
+        return ist_dt.strftime("%d-%m-%Y %I:%M %p")
     except Exception:
         return ts
-
 
 def generate_smart_suggestion(row):
     try:
@@ -136,10 +133,9 @@ def generate_smart_suggestion(row):
     except Exception:
         return "Manual review required."
 
-# --- 6. AUTHENTICATION & SESSION MANAGEMENT ---
+# --- 6. AUTHENTICATION ---
 
 def login_required(f):
-    """Decorator to protect routes that require login"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if "user_id" not in session:
@@ -149,7 +145,6 @@ def login_required(f):
 
 @app.route("/auth/check")
 def check_auth():
-    """Check if user is logged in and return username"""
     if "user_id" in session:
         return jsonify(logged_in=True, username=session.get("user_name", "User"))
     return jsonify(logged_in=False)
@@ -184,7 +179,7 @@ def logout():
     session.clear()
     return jsonify(success=True)
 
-# --- 7. USER PROFILE & ACCOUNT SETTINGS ---
+# --- 7. USER PROFILE ---
 
 @app.route("/user/profile")
 @login_required
@@ -216,18 +211,7 @@ def update_profile():
         return jsonify(success=True)
     except Exception as e: return jsonify(success=False, error=str(e)), 500
 
-@app.route("/user/change-password", methods=["POST"])
-@login_required
-def change_password():
-    data, db = request.json, get_db()
-    new_hashed = generate_password_hash(data.get("password"))
-    try:
-        db.execute("UPDATE users SET password = ? WHERE id = ?", (new_hashed, session["user_id"]))
-        db.commit()
-        return jsonify(success=True)
-    except Exception as e: return jsonify(success=False, error=str(e)), 500
-
-# --- 8. ML PREDICTIONS & BATCH DATA ANALYTICS ---
+# --- 8. ML PREDICTIONS ---
 
 @app.route("/predict", methods=["POST"])
 @login_required
@@ -254,7 +238,6 @@ def predict():
         risk = classify_risk(prob)
         suggestion = generate_smart_suggestion(vals)
 
-        # Rule Overrides for Safety
         if (vals["emi"]/income_s > 0.60 and vals["credit"] < 600) or (vals["ontime"] == 0 and vals["delays"] >= 6):
             risk = "HIGH RISK"
 
@@ -319,26 +302,7 @@ def upload():
                        eligible_members=df[e_mask].to_dict(orient='records'), pending_members=df[p_mask].to_dict(orient='records'), declined_members=df[d_mask].to_dict(orient='records'))
     except Exception as e: return jsonify(success=False, error=str(e)), 500
 
-@app.route("/generate-member-pdf", methods=["POST"])
-@login_required
-def generate_member_pdf():
-    data = request.json
-    try:
-        vals = {k: float("".join(filter(lambda x: x.isdigit() or x == '.', str(data.get(k, 0))))) for k in ["income", "loan", "emi", "tenure", "ontime", "delays", "credit"]}
-        income_s = vals["income"] if vals["income"] > 0 else 1
-        input_df = pd.DataFrame([{**vals, "emi_income_ratio": vals["emi"] / income_s, "delay_ratio": vals["delays"] / ((vals["ontime"] + vals["delays"]) or 1)}])
-        
-        prob = float(model.predict_proba(scaler.transform(input_df[ ['income', 'loan', 'emi', 'tenure', 'ontime', 'delays', 'credit', 'emi_income_ratio', 'delay_ratio'] ]))[0][1])
-        risk = classify_risk(prob)
-        
-        pdf_name = f"member_{session['user_id']}_{os.urandom(3).hex()}.pdf"
-        data.update(vals)
-        data['timestamp'] = datetime.now(IST).strftime("%Y-%m-%d %I:%M:%S %p")
-        create_visual_report(data, prob, risk, os.path.join(REPORT_FOLDER, pdf_name))
-        return jsonify(success=True, report_url=pdf_name)
-    except Exception as e: return jsonify(success=False, error=str(e)), 500
-
-# --- 9. HELP, SUPPORT & PREDICTION HISTORY ---
+# --- 9. HISTORY & STATIC ASSETS ---
 
 @app.route("/user/prediction-history")
 @login_required
@@ -347,25 +311,6 @@ def history():
     rows = db.execute("SELECT id, created_at, source, income, filename, risk, high_risk_count, low_risk_count, total_count, probability, report_path FROM predictions WHERE user_id=? ORDER BY created_at DESC", (session["user_id"],)).fetchall()
     res = [{"id": r[0], "type": r[2], "created_at": format_time(r[1]), "income": r[3] or 0, "filename": r[4] or "N/A", "risk": r[5] or "N/A", "high": r[6] or 0, "low": r[7] or 0, "total": r[8] or 0, "probability": float(r[9]) if r[9] else 0.0, "report": r[10]} for r in rows]
     return jsonify(res)
-
-@app.route("/user/feedback", methods=["POST"])
-@login_required
-def submit_feedback():
-    data, db = request.json, get_db()
-    db.execute("INSERT INTO feedback (user_id, name, email, category, details) VALUES (?, ?, ?, ?, ?)", (session["user_id"], data.get('name'), data.get('email'), data.get('category'), data.get('details')))
-    db.commit()
-    return jsonify(success=True)
-
-@app.route("/user/delete-history", methods=["POST"])
-@login_required
-def delete_history():
-    ids, db = request.json.get("ids", []), get_db()
-    placeholders = ','.join(['?'] * len(ids))
-    db.execute(f"DELETE FROM predictions WHERE user_id = ? AND id IN ({placeholders})", [session["user_id"]] + ids)
-    db.commit()
-    return jsonify(success=True)
-
-# --- 10. STATIC CONTENT & FILE DOWNLOADS ---
 
 @app.route("/download-report/<filename>")
 def download(filename):
@@ -379,7 +324,6 @@ def index():
 
 @app.route("/<path:path>")
 def static_proxy(path):
-    # Protect specific page routes
     protected_pages = ["pages/dashboard.html", "pages/upload.html", "pages/predict.html", 
                        "pages/emi_history.html", "pages/admin.html", "pages/transparency.html"]
     
@@ -393,7 +337,5 @@ def static_proxy(path):
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
-    # Production-ready configuration for Render deployment
     port = int(os.environ.get("PORT", 5000))
-    debug_mode = os.environ.get("FLASK_DEBUG", "False") == "True"
-    app.run(debug=debug_mode, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
