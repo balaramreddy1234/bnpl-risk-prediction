@@ -1,7 +1,5 @@
 import sqlite3
 import os
-import psycopg2 # You will need to add 'psycopg2-binary' to requirements.txt
-from psycopg2.extras import RealDictRow
 
 # Local SQLite Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,6 +11,8 @@ def get_db():
     
     if db_url:
         # Connect to PostgreSQL
+        import psycopg2 # You will need to add 'psycopg2-binary' to requirements.txt
+        from psycopg2.extras import RealDictRow
         conn = psycopg2.connect(db_url)
         # This makes Postgres behave like sqlite3.Row (access by column name)
         conn.cursor_factory = RealDictRow 

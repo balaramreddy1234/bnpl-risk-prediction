@@ -2,7 +2,7 @@ import os
 import sys
 
 # --- 0. PATH FIX FOR PRODUCTION ---
-# This ensures that 'database', 'utils', and 'ml' are found when running on Render
+# Ensures 'database', 'utils', and 'ml' are found when running on Render
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
@@ -12,6 +12,7 @@ import pandas as pd
 import pytz
 import sqlite3
 import pdfplumber
+import io
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session, send_from_directory, redirect, url_for
 from flask_cors import CORS
@@ -24,7 +25,8 @@ from database.db_connection import get_db
 from database.init_db import init_database
 from utils.risk_score import classify_risk
 from utils.pdf_generator import create_visual_report
-from config import UPLOAD_FOLDER, REPORT_FOLDER
+# Added DB_PATH to imports to prevent database initialization errors
+from config import UPLOAD_FOLDER, REPORT_FOLDER, DB_PATH
 
 app = Flask(__name__)
 # Keep the secret key consistent for session persistence
@@ -76,7 +78,6 @@ def apply_migrations():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     
     db.commit()
-    db.close()
 
 # Initialize DB on start
 try:
@@ -103,13 +104,18 @@ except Exception as e:
 # --- 5. CORE UTILITY FUNCTIONS ---
 
 def format_time(ts):
+    if not ts: return "N/A"
     try:
-        dt = datetime.fromisoformat(ts.replace(" ", "T"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=pytz.UTC)
+        # Handles various SQLite timestamp formats
+        if " " in ts and "T" not in ts:
+            dt = datetime.strptime(ts.split(".")[0], "%Y-%m-%d %H:%M:%S")
+        else:
+            dt = datetime.fromisoformat(ts.replace(" ", "T").split(".")[0])
+            
+        dt = dt.replace(tzinfo=pytz.UTC)
         ist_dt = dt.astimezone(IST)
         return ist_dt.strftime("%d-%m-%Y %I:%M %p")
-    except Exception:
+    except Exception as e:
         return ts
 
 def generate_smart_suggestion(row):
@@ -238,9 +244,11 @@ def predict():
         risk = classify_risk(prob)
         suggestion = generate_smart_suggestion(vals)
 
+        # Logic override for high-risk flags
         if (vals["emi"]/income_s > 0.60 and vals["credit"] < 600) or (vals["ontime"] == 0 and vals["delays"] >= 6):
             risk = "HIGH RISK"
 
+        # Report generation logic
         pdf_name = f"report_{session['user_id']}_{os.urandom(3).hex()}.pdf"
         data['timestamp'] = datetime.now(IST).strftime("%Y-%m-%d %I:%M:%S %p")
         create_visual_report(data, prob, risk, os.path.join(REPORT_FOLDER, pdf_name))
@@ -301,7 +309,65 @@ def upload():
         return jsonify(success=True, total=len(df), low_risk=int(sum(e_mask)), medium_risk=int(sum(p_mask)), high_risk=int(sum(d_mask)),
                        eligible_members=df[e_mask].to_dict(orient='records'), pending_members=df[p_mask].to_dict(orient='records'), declined_members=df[d_mask].to_dict(orient='records'))
     except Exception as e: return jsonify(success=False, error=str(e)), 500
+@app.route("/generate-member-pdf", methods=["POST"])
+@login_required
+def generate_member_pdf():
+    try:
+        raw_data = request.json
+        if not raw_data:
+            return jsonify(success=False, error="No data received"), 400
 
+        # NORMALIZE: Convert all incoming keys to lowercase to prevent naming errors
+        data = {str(k).lower().strip(): v for k, v in raw_data.items()}
+
+        # Helper to get numbers safely
+        def get_val(key, default=0.0):
+            val = data.get(key, default)
+            try: return float(str(val).replace(',', '').strip()) if val else default
+            except: return default
+
+        # 1. Extract values
+        income = get_val('income', 1.0)
+        loan = get_val('loan')
+        emi = get_val('emi')
+        tenure = get_val('tenure', 1.0)
+        ontime = get_val('ontime')
+        delays = get_val('delays')
+        credit = get_val('credit', 650.0)
+
+        # 2. Match the exact feature order used by your ML Model
+        # Order: income, loan, emi, tenure, ontime, delays, credit, emi_income_ratio, delay_ratio
+        emi_inc_ratio = emi / income
+        del_ratio = delays / (ontime + delays + 1)
+
+        input_df = pd.DataFrame([[
+            income, loan, emi, tenure, ontime, delays, credit, 
+            emi_inc_ratio, del_ratio
+        ]], columns=['income', 'loan', 'emi', 'tenure', 'ontime', 'delays', 'credit', 'emi_income_ratio', 'delay_ratio'])
+
+        # 3. Prediction
+        scaled_input = scaler.transform(input_df)
+        prob = float(model.predict_proba(scaled_input)[0][1])
+        risk = classify_risk(prob)
+
+        # 4. Generate PDF Filename
+        pdf_name = f"mbr_{session['user_id']}_{os.urandom(3).hex()}.pdf"
+        report_path = os.path.join(REPORT_FOLDER, pdf_name)
+        
+        # Pass a clean dictionary to the PDF generator
+        report_data = {
+            'name': raw_data.get('name') or raw_data.get('Name') or "Member",
+            'income': income, 'loan': loan, 'emi': emi, 
+            'tenure': tenure, 'ontime': ontime, 'delays': delays, 'credit': credit
+        }
+        
+        create_visual_report(report_data, prob, risk, report_path)
+
+        return jsonify(success=True, report_url=pdf_name)
+
+    except Exception as e:
+        print(f"CRITICAL ERROR: {str(e)}") # This shows in your Render Logs
+        return jsonify(success=False, error=str(e)), 500
 # --- 9. HISTORY & STATIC ASSETS ---
 
 @app.route("/user/prediction-history")
@@ -314,7 +380,10 @@ def history():
 
 @app.route("/download-report/<filename>")
 def download(filename):
-    return send_from_directory(REPORT_FOLDER, filename)
+    # Ensure the file exists before attempting to send
+    if os.path.exists(os.path.join(REPORT_FOLDER, filename)):
+        return send_from_directory(REPORT_FOLDER, filename)
+    return jsonify(error="File not found"), 404
 
 @app.route("/")
 def index():
